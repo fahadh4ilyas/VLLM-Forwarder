@@ -18,6 +18,7 @@ from .database import Base, engine, get_db, VllmModel, VoiceModel
 
 LOGGER_ACCESS = logging.getLogger('gunicorn.access')
 LOGGER = logging.getLogger('uvicorn.error')
+LOGGER_CHAT = logging.getLogger('chat_completions')
 
 # Global HTTP client for connection pooling
 http_client: httpx.AsyncClient = None
@@ -72,6 +73,34 @@ async def logging_request(request: Request, call_next):
 @app.get('/', include_in_schema=False)
 async def redirect():
     return RedirectResponse(app.root_path+'/docs')
+
+
+def _parse_response(text: str):
+    """Parse a chat completion response body into a loggable object.
+
+    - SSE streams (``data:`` lines): returns a list of parsed JSON chunks.
+    - Plain JSON: returns the parsed object.
+    - Otherwise: returns the raw string.
+    """
+    stripped = text.strip()
+    if stripped.startswith('data:'):
+        objects = []
+        for line in stripped.split('\n'):
+            line = line.strip()
+            if not line.startswith('data:'):
+                continue
+            payload = line[5:].strip()
+            if payload == '[DONE]':
+                continue
+            try:
+                objects.append(json.loads(payload))
+            except json.JSONDecodeError:
+                objects.append(payload)
+        return objects
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
 
 
 # ==========================================
@@ -431,8 +460,35 @@ async def proxy_chat_completions(body: ChatCompletionRequest, request: Request, 
 
     target_url = f"{db_model.url}/chat/completions"
 
-    # Hand off to the core engine
-    return await forward_request(request, target_url, body_bytes, model_name)
+    response = await forward_request(request, target_url, body_bytes, model_name)
+
+    # Only log fully-successful (2xx streaming) responses
+    if 200 <= response.status_code < 300 and isinstance(response, StreamingResponse):
+        original_iterator = response.body_iterator
+
+        async def logged_stream():
+            chunks: list[bytes] = []
+            try:
+                async for chunk in original_iterator:
+                    chunks.append(chunk)
+                    yield chunk
+                # Stream completed — build JSONL log entry
+                try:
+                    request_obj = json.loads(body_bytes)
+                except json.JSONDecodeError:
+                    request_obj = body_bytes.decode('utf-8', errors='replace')
+
+                response_text = b''.join(chunks).decode('utf-8', errors='replace')
+                response_obj = _parse_response(response_text)
+
+                LOGGER_CHAT.info(json.dumps({"request": request_obj, "response": response_obj}))
+            except Exception:
+                LOGGER.warning(f"Chat stream interrupted for model={model_name}")
+                raise
+
+        response.body_iterator = logged_stream()
+
+    return response
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"], include_in_schema=False)
