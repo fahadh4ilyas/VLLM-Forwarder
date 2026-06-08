@@ -1,0 +1,9 @@
+fastapi==0.136.3
+pydantic==2.13.4
+pydantic-settings==2.14.1
+uvicorn==0.49.0
+python-dotenv==1.2.2
+httpx==0.28.1
+sqlalchemy==2.0.50
+orjson==3.11.9
+websockets==16.0
