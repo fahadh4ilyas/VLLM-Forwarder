@@ -12,7 +12,7 @@ from fastapi.responses import RedirectResponse, Response, StreamingResponse, JSO
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
-from typing import List
+from typing import Any, List
 
 from .database import Base, engine, get_db, VllmModel, VoiceModel
 
@@ -78,13 +78,14 @@ async def redirect():
 def _parse_response(text: str):
     """Parse a chat completion response body into a loggable object.
 
-    - SSE streams (``data:`` lines): returns a list of parsed JSON chunks.
+    - SSE streams (``data:`` lines): merges chunks into a single
+      ``chat.completion``-shaped object matching the non-streaming format.
     - Plain JSON: returns the parsed object.
     - Otherwise: returns the raw string.
     """
     stripped = text.strip()
     if stripped.startswith('data:'):
-        objects = []
+        chunks = []
         for line in stripped.split('\n'):
             line = line.strip()
             if not line.startswith('data:'):
@@ -93,14 +94,113 @@ def _parse_response(text: str):
             if payload == '[DONE]':
                 continue
             try:
-                objects.append(json.loads(payload))
+                chunks.append(json.loads(payload))
             except json.JSONDecodeError:
-                objects.append(payload)
-        return objects
+                chunks.append(payload)
+        return _merge_streaming_chunks(chunks) if chunks else chunks
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return stripped
+
+
+def _merge_streaming_chunks(chunks: list) -> dict:
+    """Merge a list of ``chat.completion.chunk`` objects into a single
+    ``chat.completion``-shaped response dict."""
+    if not chunks or not isinstance(chunks[0], dict):
+        return chunks
+
+    first = chunks[0]
+    if first.get('object') != 'chat.completion.chunk':
+        return chunks
+
+    # Start with core identity fields from the first chunk
+    merged: dict[str, Any] = {
+        'id': first.get('id'),
+        'object': 'chat.completion',
+        'created': first.get('created'),
+        'model': first.get('model'),
+    }
+
+    # Scan all chunks for metadata fields — last non-null value wins
+    # (fields like usage, system_fingerprint often only appear in the final chunk)
+    metadata_keys = (
+        'system_fingerprint', 'service_tier', 'prompt_routed_experts',
+        'prompt_logprobs', 'prompt_token_ids', 'prompt_text',
+        'kv_transfer_params', 'usage',
+    )
+    for chunk in chunks:
+        for key in metadata_keys:
+            if key in chunk and chunk[key] is not None:
+                merged[key] = chunk[key]
+
+    usage = merged.pop('usage', None)
+
+    message: dict[str, Any] = {}
+    finish_reason = None
+
+    for chunk in chunks:
+        choices = chunk.get('choices', [])
+        if not choices:
+            continue
+        choice = choices[0]
+        delta = choice.get('delta', {})
+
+        # Merge delta fields
+        if 'role' in delta and 'role' not in message:
+            message['role'] = delta['role']
+
+        for field in ('content', 'reasoning'):
+            if field in delta and delta[field]:
+                message[field] = message.get(field, '') + delta[field]
+
+        # Accumulate tool_calls by index
+        if 'tool_calls' in delta:
+            tc_list = message.setdefault('tool_calls', [])
+            for tc in delta['tool_calls']:
+                idx = tc.get('index', 0)
+                while len(tc_list) <= idx:
+                    tc_list.append({})
+                for key, val in tc.items():
+                    if key == 'index':
+                        continue
+                    if key == 'function':
+                        fn = tc_list[idx].setdefault('function', {})
+                        # Merge function fields: name only set once, arguments concatenated
+                        for fn_key, fn_val in val.items():
+                            if fn_key == 'arguments':
+                                fn['arguments'] = fn.get('arguments', '') + fn_val
+                            elif fn_key not in fn:
+                                fn[fn_key] = fn_val
+                            else:
+                                fn[fn_key] = fn_val
+                    elif isinstance(val, str):
+                        tc_list[idx][key] = (tc_list[idx].get(key, '') + val)
+                    else:
+                        tc_list[idx][key] = val
+
+        # Carry forward other choice-level fields
+        for field in ('refusal', 'annotations', 'audio', 'function_call'):
+            if field in delta and delta[field] is not None:
+                message[field] = delta[field]
+
+        if choice.get('finish_reason'):
+            finish_reason = choice['finish_reason']
+
+    choice_logprobs = first.get('choices', [{}])[0].get('logprobs')
+    if 'finish_reason' in first.get('choices', [{}])[0] and not finish_reason:
+        finish_reason = first['choices'][0]['finish_reason']
+
+    merged['choices'] = [{
+        'index': 0,
+        'message': message,
+        'logprobs': choice_logprobs,
+        'finish_reason': finish_reason,
+    }]
+    if usage:
+        merged['usage'] = usage
+
+    return merged
 
 
 # ==========================================
