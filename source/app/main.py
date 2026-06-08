@@ -452,7 +452,13 @@ async def proxy_audio_speech(
         raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found in routing database.")
 
     target_url = f"{db_voice.url}/audio/speech"
-    return await forward_request(request, target_url, body_bytes, voice_name)
+    response = await forward_request(request, target_url, body_bytes, voice_name)
+
+    if response.status_code == 499:
+        LOGGER.warning(f"Client disconnected before upstream response for audio voice={voice_name}")
+        return response
+
+    return response
 
 
 # ==========================================
@@ -571,6 +577,10 @@ async def proxy_chat_completions(
 
     response = await forward_request(request, target_url, body_bytes, model_name)
 
+    if response.status_code == 499:
+        LOGGER.warning(f"Client disconnected before upstream response for chat model={model_name}")
+        return response
+
     # Only log fully-successful (2xx streaming) responses
     if 200 <= response.status_code < 300 and isinstance(response, StreamingResponse):
         original_iterator = response.body_iterator
@@ -591,6 +601,9 @@ async def proxy_chat_completions(
                 response_obj = _parse_response(response_text)
 
                 LOGGER_CHAT.info(json.dumps({"request": request_obj, "response": response_obj}))
+            except asyncio.CancelledError:
+                LOGGER.warning(f"Client disconnected during chat stream for model={model_name}")
+                raise
             except Exception:
                 LOGGER.warning(f"Chat stream interrupted for model={model_name}")
                 raise
