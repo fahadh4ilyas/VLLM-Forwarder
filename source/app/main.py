@@ -23,7 +23,7 @@ LOGGER_CHAT = logging.getLogger('chat_completions')
 # Global HTTP client for connection pooling
 http_client: httpx.AsyncClient = None
 
-# Bearer token security scheme (non-enforcing — shows in Swagger but doesn't block requests without a token)
+# Bearer token security scheme (auto_error=False — shows in Swagger without blocking requests)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 @asynccontextmanager
@@ -42,7 +42,6 @@ app = FastAPI(
     description='API for managing and proxying requests to multiple vLLM servers with OpenAI-compatible endpoints.',
     version='1.0.0',
     lifespan=lifespan,
-    dependencies=[Depends(bearer_scheme)]
 )
 
 @app.middleware("http")
@@ -438,7 +437,12 @@ class SpeechRequest(BaseModel):
         extra = 'allow'
 
 @app.post('/v1/audio/speech', tags=["Speech Standard"])
-async def proxy_audio_speech(body: SpeechRequest, request: Request, db: Session = Depends(get_db)):
+async def proxy_audio_speech(
+    body: SpeechRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    token = Depends(bearer_scheme),
+):
     """Proxy the REST Speech endpoint to the correct server based on Voice."""
     body_bytes = await request.body()
     voice_name = body.voice
@@ -549,7 +553,12 @@ class ChatCompletionRequest(BaseModel):
         extra = 'allow'  # Forward-compatible with newer OpenAI parameters
 
 @app.post('/v1/chat/completions', tags=["OpenAI Standard"])
-async def proxy_chat_completions(body: ChatCompletionRequest, request: Request, db: Session = Depends(get_db)):
+async def proxy_chat_completions(
+    body: ChatCompletionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    token = Depends(bearer_scheme),
+):
     """Proxy the chat completion request to the correct vLLM server."""
     body_bytes = await request.body()
     model_name = body.model
