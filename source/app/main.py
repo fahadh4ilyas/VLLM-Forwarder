@@ -308,13 +308,17 @@ class AddModelRequest(BaseModel):
     url: str # e.g., "http://192.168.1.50:8000/v1"
 
 @app.post('/model', tags=["Management"])
-async def add_model(payload: AddModelRequest, db: Session = Depends(get_db)):
+async def add_model(payload: AddModelRequest, db: Session = Depends(get_db), token = Depends(bearer_scheme)):
     """Fetch models from a vLLM server and save them to the DB."""
     base_url = payload.url.rstrip('/')
     target_url = f"{base_url}/models"
 
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token.credentials}"
+
     try:
-        response = await http_client.get(target_url, timeout=10.0)
+        response = await http_client.get(target_url, timeout=10.0, headers=headers)
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -370,16 +374,21 @@ async def delete_model(model_name: str, db: Session = Depends(get_db)):
 # ==========================================
 
 class AddVoiceRequest(BaseModel):
-    url: str
+    url: str # e.g., "http://192.168.1.50:8000/v1"
     extra_kwargs: List[str] = Field(default_factory=list)
 
 @app.post('/voice', tags=["Speech Management"])
-async def add_voice(payload: AddVoiceRequest, db: Session = Depends(get_db)):
+async def add_voice(payload: AddVoiceRequest, db: Session = Depends(get_db), token = Depends(bearer_scheme)):
     """Fetch voices from a vLLM server and save them to the DB."""
     base_url = payload.url.rstrip('/')
     target_url = f"{base_url}/audio/voices"
+
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token.credentials}"
+
     try:
-        response = await http_client.get(target_url, timeout=10.0)
+        response = await http_client.get(target_url, timeout=10.0, headers=headers)
         response.raise_for_status()
         data = response.json()
     except Exception as e:
