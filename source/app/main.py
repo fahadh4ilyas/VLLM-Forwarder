@@ -161,12 +161,13 @@ def _merge_streaming_chunks(chunks: list) -> dict:
                 while len(tc_list) <= idx:
                     tc_list.append({})
                 for key, val in tc.items():
-                    if key == 'index':
+                    if key == 'index' or val is None:
                         continue
                     if key == 'function':
                         fn = tc_list[idx].setdefault('function', {})
-                        # Merge function fields: name only set once, arguments concatenated
                         for fn_key, fn_val in val.items():
+                            if fn_val is None:
+                                continue
                             if fn_key == 'arguments':
                                 fn['arguments'] = fn.get('arguments', '') + fn_val
                             elif fn_key not in fn:
@@ -601,7 +602,7 @@ async def proxy_chat_completions(
                 response_obj = _parse_response(response_text)
 
                 LOGGER_CHAT.info(json.dumps({"request": request_obj, "response": response_obj}))
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, GeneratorExit):
                 LOGGER.warning(f"Client disconnected during chat stream for model={model_name}")
                 raise
             except Exception:
