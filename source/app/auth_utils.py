@@ -32,14 +32,14 @@ def _get_redis():
 bearer_scheme = HTTPBearer(auto_error=False)
 
 async def auth_api_key(
-    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> HTTPAuthorizationCredentials:
     if token is None:
         return HTTPAuthorizationCredentials(scheme='Empty', credentials='')
     return token
 
 async def enforce_api_key(
-    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> HTTPAuthorizationCredentials:
     if token is None:
         raise HTTPException(status_code=401, detail={
@@ -59,8 +59,6 @@ async def enforce_api_key(
 
 async def check_api_key(key: str) -> dict | None:
     """Validate an API key (user or agent) and return its data, or None if invalid."""
-    if not key:
-        return None
 
     cache_key = f'apikey_{config.name_prefix}_{key}'
     redis = _get_redis()
