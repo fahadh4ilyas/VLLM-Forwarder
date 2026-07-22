@@ -451,7 +451,7 @@ async def get_models(
     If an API key with a forward URL is provided, proxies to that URL.
     Otherwise returns models from the local database.
     """
-    forward_url, _ = await resolve_forward_url(token)
+    forward_url = await resolve_forward_url(token)
     if forward_url:
         return await forward_request(request, f"{forward_url.rstrip('/')}/models", b"", "models")
 
@@ -534,7 +534,7 @@ async def get_voices(
     If an API key with a forward URL is provided, proxies to that URL.
     Otherwise returns voices from the local database.
     """
-    forward_url, _ = await resolve_forward_url(token)
+    forward_url = await resolve_forward_url(token)
     if forward_url:
         return await forward_request(request, f"{forward_url.rstrip('/')}/audio/voices", b"", "voices")
 
@@ -598,7 +598,7 @@ async def proxy_audio_speech(
     body_bytes = await request.body()
     voice_name = body.voice
 
-    forward_url, _ = await resolve_forward_url(token)
+    forward_url = await resolve_forward_url(token)
 
     if forward_url:
         target_url = f"{forward_url.rstrip('/')}/audio/speech"
@@ -714,7 +714,7 @@ async def proxy_chat_completions(
     body_bytes = await request.body()
     model_name = body.model
 
-    forward_url, auth_data = await resolve_forward_url(token)
+    forward_url = await resolve_forward_url(token)
 
     if forward_url:
         target_url = f"{forward_url.rstrip('/')}/chat/completions"
@@ -733,12 +733,16 @@ async def proxy_chat_completions(
     # Build log info for Kafka/file logging
     user_api_key = ''
     agent_api_key = ''
-    if auth_data:
-        if auth_data.get('type') == 'agent':
-            agent_api_key = auth_data.get('agent_api_key', '')
-            user_api_key = auth_data.get('user_api_key', '')
-        else:
-            user_api_key = auth_data.get('api_key', '')
+    if forward_url:
+        user_api_key = token.credentials if (token and token.credentials) else ''
+    else:
+        auth_data = await check_api_key(token.credentials) if (token and token.credentials) else None
+        if auth_data:
+            if auth_data.get('type') == 'agent':
+                agent_api_key = auth_data.get('agent_api_key', '')
+                user_api_key = auth_data.get('user_api_key', '')
+            else:
+                user_api_key = auth_data.get('api_key', '')
 
     # Only log fully-successful (2xx streaming) responses
     if 200 <= response.status_code < 300 and isinstance(response, StreamingResponse):
@@ -954,13 +958,22 @@ async def create_forward(
     payload: ForwardRequest,
     token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
 ):
-    """Set a forward URL for your API key. All subsequent requests will be routed to this URL."""
-    auth_data, err = await require_auth(token)
+    """Set a forward URL for your API key. Validates by probing /v1/models on the target."""
+    err = authenticated_auth(token)
     if err:
         return err
 
-    user_api_key = auth_data.get('api_key', token.credentials) if auth_data else (token.credentials if token and token.credentials else '')
-    await set_forward_url(user_api_key, payload.url)
+    base_url = payload.url.rstrip('/')
+    try:
+        resp = await http_client.get(f"{base_url}/models", timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("data"):
+            raise HTTPException(status_code=400, detail="Target URL does not return a valid /v1/models response.")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to reach {base_url}/models: {str(e)}")
+
+    await set_forward_url(token.credentials, payload.url)
     return {"status": "success", "message": f"Forward URL set to {payload.url}"}
 
 
@@ -969,12 +982,11 @@ async def delete_forward(
     token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
 ):
     """Remove the forward URL for your API key."""
-    auth_data, err = await require_auth(token)
+    err = authenticated_auth(token)
     if err:
         return err
 
-    user_api_key = auth_data.get('api_key', token.credentials) if auth_data else (token.credentials if token and token.credentials else '')
-    deleted = await delete_forward_url(user_api_key)
+    deleted = await delete_forward_url(token.credentials)
 
     if not deleted:
         return JSONResponse(
@@ -1014,7 +1026,7 @@ async def catch_all_proxy(
         except json.JSONDecodeError:
             pass
 
-    forward_url, _ = await resolve_forward_url(token)
+    forward_url = await resolve_forward_url(token)
 
     if forward_url:
         target_url = f"{forward_url.rstrip('/')}/{path}"

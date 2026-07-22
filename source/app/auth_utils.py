@@ -471,36 +471,11 @@ async def delete_forward_url(user_api_key: str) -> bool:
 
 async def resolve_forward_url(
     token: HTTPAuthorizationCredentials,
-) -> tuple[str | None, dict | None]:
-    """Resolve forward URL from an API key. Returns (forward_url, auth_data).
-
-    Cached in Redis: keyed by the raw API key string.
-    """
+) -> str | None:
+    """Resolve forward URL from any API key. Returns forward_url or None."""
     if not (token and token.credentials):
-        return None, None
-
-    cache_key = f'fwresolve_{config.name_prefix}_{token.credentials}'
-
-    redis = _get_redis()
-    if redis is not None:
-        cached = await redis.get(cache_key)
-        if cached is not None:
-            parts = json.loads(cached)
-            return parts[0], parts[1] if len(parts) > 1 else None
-
-    auth_data = await check_api_key(token.credentials)
-    if not auth_data:
-        if redis is not None:
-            await redis.set(cache_key, json.dumps([None, None]), ex=60)
-        return None, None
-
-    user_key = auth_data.get('user_api_key', auth_data.get('api_key', ''))
-    forward_url = await get_forward_url(user_key)
-
-    if redis is not None:
-        await redis.set(cache_key, json.dumps([forward_url, auth_data]), ex=_CACHE_TTL if forward_url else 60)
-
-    return forward_url, auth_data
+        return None
+    return await get_forward_url(token.credentials)
 
 
 # ==========================================
