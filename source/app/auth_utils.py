@@ -389,7 +389,7 @@ async def get_forward_url(user_api_key: str) -> str | None:
             db.close()
 
     if redis is not None:
-        await redis.set(cache_key, result if result else '__NONE__', ex=_CACHE_TTL)
+        await redis.set(cache_key, result if result else '__NONE__', ex=_CACHE_TTL if result else 60)
 
     return result
 
@@ -513,7 +513,7 @@ async def get_model(model_name: str) -> dict | None:
             db.close()
 
     if redis is not None:
-        await redis.set(cache_key, json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL)
+        await redis.set(cache_key, json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL if result else 60)
 
     return result
 
@@ -664,7 +664,7 @@ async def get_voice(voice_name: str) -> dict | None:
             db.close()
 
     if redis is not None:
-        await redis.set(cache_key, json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL)
+        await redis.set(cache_key, json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL if result else 60)
 
     return result
 
