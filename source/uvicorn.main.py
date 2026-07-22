@@ -13,9 +13,6 @@ if __name__ == '__main__':
             'all_format': {
                 'format': '[%(asctime)s] [%(process)d] [%(levelname)s] %(message)s',
                 'datefmt': '%Y-%m-%d %H:%M:%S %z'
-            },
-            'raw_format': {
-                'format': '%(message)s'
             }
         },
         'handlers': {
@@ -37,13 +34,6 @@ if __name__ == '__main__':
                 'filename': os.path.join(WORK_DIR, 'logs', 'access.log'),
                 'when': 'midnight',
                 'backupCount': 30,
-            },
-            'chat': {
-                'class': "logging.handlers.TimedRotatingFileHandler",
-                'formatter': 'raw_format',
-                'filename': os.path.join(WORK_DIR, 'logs', 'chat_completions.jsonl'),
-                'when': 'midnight',
-                'backupCount': 30,
             }
         },
         'loggers': {
@@ -59,11 +49,6 @@ if __name__ == '__main__':
             },
             'uvicorn.error': {
                 'handlers': ['console', 'error'],
-                'level': 'INFO',
-                'propagate': False
-            },
-            'chat_completions': {
-                'handlers': ['chat'],
                 'level': 'INFO',
                 'propagate': False
             }
