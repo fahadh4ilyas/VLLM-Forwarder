@@ -7,3 +7,6 @@ httpx==0.28.1
 sqlalchemy==2.0.50
 orjson==3.11.9
 websockets==16.0
+motor==3.7.1
+aiokafka==0.12.0
+redis==5.2.0
