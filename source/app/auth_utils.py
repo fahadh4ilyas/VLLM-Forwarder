@@ -48,13 +48,16 @@ async def check_api_key(key: str) -> dict | None:
     if not key:
         return None
 
+    cache_key = f'apikey_{config.name_prefix}_{key}'
     redis = _get_redis()
     if redis is not None:
-        cached = await redis.get(f'apikey_{config.name_prefix}_{key}')
+        cached = await redis.get(cache_key)
         if cached is not None:
             return json.loads(cached) if cached != '__NONE__' else None
 
     result = None
+
+    # --- User lookup ---
     if uses_mongo():
         mongo_db = get_mongo_db()
         doc = await mongo_db.user_auth.find_one({
@@ -65,15 +68,6 @@ async def check_api_key(key: str) -> dict | None:
             doc.pop('_id', None)
             doc['type'] = 'user'
             result = doc
-        else:
-            doc = await mongo_db.agent_auth.find_one({
-                'agent_api_key': key,
-                'prefix': config.name_prefix,
-            })
-            if doc:
-                doc.pop('_id', None)
-                doc['type'] = 'agent'
-                result = doc
     else:
         db = SessionLocal()
         try:
@@ -88,7 +82,24 @@ async def check_api_key(key: str) -> dict | None:
                     'response_data': auth.response_data,
                     'type': 'user',
                 }
-            else:
+        finally:
+            db.close()
+
+    # --- Agent lookup (only if user not found) ---
+    if result is None:
+        if uses_mongo():
+            mongo_db = get_mongo_db()
+            doc = await mongo_db.agent_auth.find_one({
+                'agent_api_key': key,
+                'prefix': config.name_prefix,
+            })
+            if doc:
+                doc.pop('_id', None)
+                doc['type'] = 'agent'
+                result = doc
+        else:
+            db = SessionLocal()
+            try:
                 agent = (
                     db.query(AgentAuth)
                     .filter(AgentAuth.agent_api_key == key, AgentAuth.prefix == config.name_prefix)
@@ -102,11 +113,11 @@ async def check_api_key(key: str) -> dict | None:
                         'user_api_key': agent.user_api_key,
                         'type': 'agent',
                     }
-        finally:
-            db.close()
+            finally:
+                db.close()
 
     if redis is not None:
-        await redis.set(f'apikey_{config.name_prefix}_{key}', json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL if result else 60)
+        await redis.set(cache_key, json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL if result else 60)
 
     return result
 
@@ -223,49 +234,6 @@ async def generate_account_auth(auth_response: dict) -> str:
     return api_key
 
 
-async def retrieve_account_data(api_key: str) -> dict | None:
-    """Retrieve user auth data by API key."""
-    cache_key = f'apikey_{config.name_prefix}_{api_key}'
-
-    redis = _get_redis()
-    if redis is not None:
-        cached = await redis.get(cache_key)
-        if cached is not None:
-            return json.loads(cached) if cached != '__NONE__' else None
-
-    result = None
-    if uses_mongo():
-        mongo_db = get_mongo_db()
-        doc = await mongo_db.user_auth.find_one({
-            'api_key': api_key,
-            'prefix': config.name_prefix,
-        })
-        if doc:
-            doc.pop('_id', None)
-            result = doc
-    else:
-        db = SessionLocal()
-        try:
-            auth = (
-                db.query(UserAuth)
-                .filter(UserAuth.api_key == api_key, UserAuth.prefix == config.name_prefix)
-                .first()
-            )
-            if auth:
-                result = {
-                    'api_key': auth.api_key,
-                    'response_data': auth.response_data,
-                    'type': 'user',
-                }
-        finally:
-            db.close()
-
-    if redis is not None:
-        await redis.set(cache_key, json.dumps(result) if result else '__NONE__', ex=_CACHE_TTL if result else 60)
-
-    return result
-
-
 # ==========================================
 # Agent API Key (POST/DELETE /agent)
 # ==========================================
@@ -274,7 +242,7 @@ async def generate_agent_auth(
     agent_name: str, agent_description: str | None, user_api_key: str
 ) -> str:
     """Create agent API key, save to DB, return the key."""
-    api_key = 'eb-' + urlsafe_b64encode(
+    api_key = 'ag-' + urlsafe_b64encode(
         hashlib.sha256((agent_name + user_api_key).encode()).digest()
     ).decode()[:-1]
 

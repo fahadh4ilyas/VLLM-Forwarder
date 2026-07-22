@@ -27,7 +27,6 @@ from .auth_utils import (
     require_auth,
     require_user_auth,
     generate_account_auth,
-    retrieve_account_data,
     generate_agent_auth,
     delete_agent_auth,
     set_forward_url,
@@ -837,7 +836,7 @@ async def get_api_key_data(
     if err:
         return err
 
-    data = await retrieve_account_data(token.credentials)
+    data = await check_api_key(token.credentials)
     if data is None:
         return JSONResponse(
             status_code=401,
@@ -850,6 +849,13 @@ async def get_api_key_data(
                 }
             },
         )
+
+    if data.get('type') == 'agent':
+        user_data = await check_api_key(data.get('user_api_key', ''))
+        data.pop('user_api_key', None)
+        if user_data:
+            user_data.pop('api_key', None)
+        data['user_data'] = user_data
 
     return data
 
