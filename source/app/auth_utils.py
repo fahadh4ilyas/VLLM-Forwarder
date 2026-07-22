@@ -178,7 +178,7 @@ async def require_user_auth(
 
 
 # ==========================================
-# User API Key (POST/GET /apikey)
+# User API Key (POST /apikey)
 # ==========================================
 
 async def generate_account_auth(auth_response: dict) -> str:
