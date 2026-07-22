@@ -2,7 +2,7 @@ import json
 import hashlib
 from base64 import urlsafe_b64encode
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -36,6 +36,20 @@ async def auth_api_key(
 ) -> HTTPAuthorizationCredentials:
     if token is None:
         return HTTPAuthorizationCredentials(scheme='Empty', credentials='')
+    return token
+
+async def enforce_api_key(
+    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> HTTPAuthorizationCredentials:
+    if token is None:
+        raise HTTPException(status_code=401, detail={
+            "error": {
+                "message": "You didn't provide an API key. Use Authorization: Bearer YOUR_KEY.",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": None,
+            }
+        })
     return token
 
 
@@ -139,12 +153,13 @@ def authenticated_auth(auth_token: HTTPAuthorizationCredentials) -> JSONResponse
     return None
 
 
-async def require_auth(
+async def require_user_auth(
     token: HTTPAuthorizationCredentials,
 ) -> tuple[dict | None, JSONResponse | None]:
-    """Validate any API key (user or agent). Returns (auth_data, error).
+    """Validate a user API key only. Returns (auth_data, error).
 
     In authless mode, skips validation entirely.
+    Otherwise: missing token → 401, invalid key → 401, agent key → 403.
     """
     if config.authless_mode:
         return None, None
@@ -156,20 +171,6 @@ async def require_auth(
         return None, JSONResponse(status_code=401, content={
             "error": {"message": "Invalid API key.", "type": "invalid_request_error", "param": None, "code": "invalid_api_key"}
         })
-    return auth_data, None
-
-
-async def require_user_auth(
-    token: HTTPAuthorizationCredentials,
-) -> tuple[dict | None, JSONResponse | None]:
-    """Validate a user API key only. Returns (auth_data, error).
-
-    In authless mode, skips validation entirely.
-    Otherwise: missing token → 401, invalid key → 401, agent key → 403.
-    """
-    auth_data, err = await require_auth(token)
-    if err or auth_data is None:
-        return auth_data, err
     if auth_data.get('type') != 'user':
         return None, JSONResponse(status_code=403, content={
             "error": {"message": "Only user API keys can perform this action.", "type": "invalid_request_error", "param": None, "code": "access_denied"}

@@ -20,14 +20,13 @@ from typing import Any, List, Optional
 from .config import config
 from .database import Base, engine
 from .auth_utils import (
-    bearer_scheme,
     auth_api_key,
+    enforce_api_key,
     check_api_key,
-    authenticated_auth,
-    require_auth,
     require_user_auth,
     generate_account_auth,
     generate_agent_auth,
+    get_forward_url,
     delete_agent_auth,
     set_forward_url,
     delete_forward_url,
@@ -410,7 +409,7 @@ class AddModelRequest(BaseModel):
 @app.post('/model', tags=["Management"])
 async def add_model(
     payload: AddModelRequest,
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """Fetch models from a vLLM server and save them to the DB."""
     auth_data, err = await require_user_auth(token)
@@ -444,7 +443,7 @@ async def add_model(
 @app.get('/v1/models', tags=["OpenAI Standard"])
 async def get_models(
     request: Request,
-    token=Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """List all models.
 
@@ -465,7 +464,7 @@ async def get_models(
 @app.delete('/model/{model_name:path}', tags=["Management"])
 async def delete_model(
     model_name: str,
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """Delete a model route from the database."""
     auth_data, err = await require_user_auth(token)
@@ -493,7 +492,7 @@ class AddVoiceRequest(BaseModel):
 @app.post('/voice', tags=["Speech Management"])
 async def add_voice(
     payload: AddVoiceRequest,
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """Fetch voices from a server and save them to the DB."""
     auth_data, err = await require_user_auth(token)
@@ -527,7 +526,7 @@ async def add_voice(
 @app.get('/v1/audio/voices', tags=["Speech Standard"])
 async def get_voices(
     request: Request,
-    token=Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """List all voices.
 
@@ -545,7 +544,7 @@ async def get_voices(
 @app.delete('/voice/url/{url:path}', tags=["Speech Management"])
 async def delete_voice_by_url(
     url: str,
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """Delete voices by URL for this prefix."""
     auth_data, err = await require_user_auth(token)
@@ -564,7 +563,7 @@ async def delete_voice_by_url(
 @app.delete('/voice/{voice_name:path}', tags=["Speech Management"])
 async def delete_voice(
     voice_name: str,
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """Delete a voice route for this prefix."""
     auth_data, err = await require_user_auth(token)
@@ -592,7 +591,7 @@ class SpeechRequest(BaseModel):
 async def proxy_audio_speech(
     body: SpeechRequest,
     request: Request,
-    token=Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Proxy the REST Speech endpoint to the correct server."""
     body_bytes = await request.body()
@@ -708,7 +707,7 @@ class ChatCompletionRequest(BaseModel):
 async def proxy_chat_completions(
     body: ChatCompletionRequest,
     request: Request,
-    token=Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Proxy the chat completion request to the correct server."""
     body_bytes = await request.body()
@@ -831,17 +830,17 @@ async def create_api_key(
 
 @app.get('/apikey', tags=["Authentication"])
 async def get_api_key_data(
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Retrieve the data associated with your API key."""
     if config.authless_mode:
         raise HTTPException(status_code=404)
-    err = authenticated_auth(token)
-    if err:
-        return err
 
     data = await check_api_key(token.credentials)
     if data is None:
+        forward_url = await get_forward_url(token.credentials)
+        if forward_url:
+            return {'api_key': token.credentials, 'forward_url': forward_url}
         return JSONResponse(
             status_code=401,
             content={
@@ -872,28 +871,15 @@ async def get_api_key_data(
 async def create_agent(
     agent_name: str = Body(..., description="Name of the agent"),
     agent_description: Optional[str] = Body(None, description="Optional description"),
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Generate a new agent API key. Requires user authentication."""
     if config.authless_mode:
         raise HTTPException(status_code=404)
-    err = authenticated_auth(token)
+
+    auth_data, err = await require_user_auth(token)
     if err:
         return err
-
-    auth_data = await check_api_key(token.credentials)
-    if auth_data is None:
-        return JSONResponse(
-            status_code=401,
-            content={
-                "error": {
-                    "message": "Invalid API key.",
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": "invalid_api_key",
-                }
-            },
-        )
 
     user_api_key = auth_data.get('api_key', token.credentials)
     api_key = await generate_agent_auth(agent_name, agent_description, user_api_key)
@@ -903,28 +889,15 @@ async def create_agent(
 @app.delete('/agent', tags=["Agent Management"])
 async def delete_agent(
     agent_api_key: str = Body(..., description="API key of the agent to delete", embed=True),
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Delete an agent API key. Only the user who created it can delete it."""
     if config.authless_mode:
         raise HTTPException(status_code=404)
-    err = authenticated_auth(token)
+
+    auth_data, err = await require_user_auth(token)
     if err:
         return err
-
-    auth_data = await check_api_key(token.credentials)
-    if auth_data is None:
-        return JSONResponse(
-            status_code=401,
-            content={
-                "error": {
-                    "message": "Invalid API key.",
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": "invalid_api_key",
-                }
-            },
-        )
 
     user_api_key = auth_data.get('api_key', token.credentials)
     result = await delete_agent_auth(agent_api_key, user_api_key)
@@ -956,12 +929,9 @@ class ForwardRequest(BaseModel):
 @app.post('/forward', tags=["Forward Management"])
 async def create_forward(
     payload: ForwardRequest,
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Set a forward URL for your API key. Validates by probing /v1/models on the target."""
-    err = authenticated_auth(token)
-    if err:
-        return err
 
     base_url = payload.url.rstrip('/')
     try:
@@ -979,12 +949,9 @@ async def create_forward(
 
 @app.delete('/forward', tags=["Forward Management"])
 async def delete_forward(
-    token: Optional[HTTPAuthorizationCredentials] = Depends(auth_api_key),
+    token: HTTPAuthorizationCredentials = Depends(enforce_api_key),
 ):
     """Remove the forward URL for your API key."""
-    err = authenticated_auth(token)
-    if err:
-        return err
 
     deleted = await delete_forward_url(token.credentials)
 
@@ -1012,7 +979,7 @@ async def delete_forward(
 async def catch_all_proxy(
     request: Request,
     path: str,
-    token=Depends(bearer_scheme),
+    token: HTTPAuthorizationCredentials = Depends(auth_api_key),
 ):
     """Catch-all route that dynamically forwards requests based on payload 'model'."""
     target_model = None
