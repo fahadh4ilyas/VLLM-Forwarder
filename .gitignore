@@ -13,7 +13,10 @@ build/
 *.db
 
 # Logs
+logs/
 *.log*
+*.jsonl
+*.lock
 
 # IDE
 .vscode/
